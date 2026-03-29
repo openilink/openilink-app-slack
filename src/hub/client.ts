@@ -1,6 +1,8 @@
 import type { ToolDefinition } from "./types.js";
 
-/** Hub Bot API 客户端，用于向微信发送消息、同步工具定义 */
+/**
+ * Hub Bot API 客户端 - 用于通过 Hub 向用户发送消息、同步工具定义
+ */
 export class HubClient {
   private hubUrl: string;
   private appToken: string;
@@ -16,109 +18,85 @@ export class HubClient {
    */
   async syncTools(tools: ToolDefinition[]): Promise<void> {
     const url = `${this.hubUrl}/bot/v1/app/tools`;
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.appToken}`,
+      },
+      body: JSON.stringify({ tools }),
+      signal: AbortSignal.timeout(30_000),
+    });
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(
+        `[hub-client] 同步工具定义失败: ${res.status} ${res.statusText} - ${errText}`,
+      );
+    }
+    console.log(`[hub-client] 工具定义同步成功, 共 ${tools.length} 个工具`);
+  }
 
-    try {
-      const res = await fetch(url, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.appToken}`,
-        },
-        body: JSON.stringify({ tools }),
-        signal: controller.signal,
-      });
+  /**
+   * 发送消息（通用方法）
+   * POST {hubUrl}/bot/v1/message/send
+   */
+  async sendMessage(
+    to: string,
+    type: string,
+    content: string,
+    options?: { url?: string; base64?: string; filename?: string; traceId?: string },
+  ): Promise<void> {
+    const url = `${this.hubUrl}/bot/v1/message/send`;
 
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Hub API 同步工具失败: ${res.status} ${errText}`);
-      }
-      console.log(`[HubClient] 工具定义同步成功, 共 ${tools.length} 个工具`);
-    } finally {
-      clearTimeout(timeout);
+    const body: Record<string, string> = { to, type, content };
+    if (options?.url) body.url = options.url;
+    if (options?.base64) body.base64 = options.base64;
+    if (options?.filename) body.filename = options.filename;
+    if (options?.traceId) body.trace_id = options.traceId;
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.appToken}`,
+        ...(options?.traceId ? { "X-Trace-Id": options.traceId } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(
+        `[hub-client] 发送消息失败: ${res.status} ${res.statusText} - ${errText}`,
+      );
     }
   }
 
   /**
    * 发送文本消息
-   * @param to 接收者 ID（微信用户 ID）
-   * @param text 文本内容
-   * @param traceId 可选追踪 ID
    */
   async sendText(to: string, text: string, traceId?: string): Promise<void> {
-    await this.sendMessage(to, "text", { text }, traceId);
+    await this.sendMessage(to, "text", text, { traceId });
   }
 
   /**
    * 发送图片消息
-   * @param to 接收者 ID
-   * @param imageUrl 图片 URL
-   * @param traceId 可选追踪 ID
    */
-  async sendImage(to: string, imageUrl: string, traceId?: string): Promise<void> {
-    await this.sendMessage(to, "image", { url: imageUrl }, traceId);
+  async sendImage(to: string, url: string, traceId?: string): Promise<void> {
+    await this.sendMessage(to, "image", "", { url, traceId });
   }
 
   /**
    * 发送文件消息
-   * @param to 接收者 ID
-   * @param fileUrl 文件 URL
-   * @param fileName 文件名
-   * @param traceId 可选追踪 ID
    */
-  async sendFile(to: string, fileUrl: string, fileName: string, traceId?: string): Promise<void> {
-    await this.sendMessage(to, "file", { url: fileUrl, name: fileName }, traceId);
-  }
-
-  /**
-   * 发送通用消息
-   * @param to 接收者 ID
-   * @param type 消息类型
-   * @param content 消息内容
-   * @param traceId 可选追踪 ID
-   */
-  async sendMessage(
+  async sendFile(
     to: string,
-    type: string,
-    content: Record<string, any>,
+    fileUrl: string,
+    fileName: string,
     traceId?: string,
   ): Promise<void> {
-    const url = `${this.hubUrl}/api/bot/send`;
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${this.appToken}`,
-    };
-    if (traceId) {
-      headers["X-Trace-Id"] = traceId;
-    }
-
-    const body = JSON.stringify({
-      to,
-      type,
-      content,
-    });
-
-    // 30 秒超时
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30_000);
-
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers,
-        body,
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Hub API 请求失败: ${res.status} ${errText}`);
-      }
-    } finally {
-      clearTimeout(timeout);
-    }
+    await this.sendMessage(to, "file", "", { url: fileUrl, filename: fileName, traceId });
   }
 }
