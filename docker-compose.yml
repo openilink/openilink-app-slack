@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  slack-bridge:
+    build: .
+    container_name: openilink-app-slack
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8082}:8082"
+    volumes:
+      - slack-data:/data
+    environment:
+      - HUB_URL=${HUB_URL}
+      - BASE_URL=${BASE_URL}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      - SLACK_CHANNEL_ID=${SLACK_CHANNEL_ID}
+      - DB_PATH=/data/slack.db
+      - PORT=8082
+
+volumes:
+  slack-data:
+    driver: local
