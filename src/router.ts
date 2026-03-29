@@ -53,9 +53,9 @@ export class Router {
     const ctx: ToolContext = {
       installationId: installation.id,
       botId: installation.botId,
-      userId: data.user_id ?? "",
+      userId: data.sender?.id ?? data.user_id ?? "",
       traceId: event.trace_id,
-      args: data,
+      args: (data as any).args ?? {},
     };
 
     console.log(`[Router] 执行命令: ${command}, user=${ctx.userId}, trace=${ctx.traceId}`);
