@@ -13,7 +13,6 @@ import { createSlackApp, type SlackMessageData } from "./slack/event.js";
 import { collectAllTools } from "./tools/index.js";
 import { WxToSlack } from "./bridge/wx-to-slack.js";
 import { SlackToWx } from "./bridge/slack-to-wx.js";
-import type { HubEvent } from "./hub/types.js";
 
 /** 启动服务 */
 async function main(): Promise<void> {
@@ -50,38 +49,6 @@ async function main(): Promise<void> {
 
   // 定期清理过期的 PKCE 缓存
   const cleanupTimer = setInterval(cleanExpired, 60_000);
-
-  /**
-   * 处理 Hub 推送的事件
-   * - command 类型 → Router 路由到 Tool Handler
-   * - message.* 类型 → WxToSlack 桥接到 Slack
-   */
-  async function onHubEvent(event: HubEvent, installationId: string): Promise<void> {
-    if (!event.event) return;
-
-    const { type } = event.event;
-    const installation = store.getInstallation(installationId);
-    if (!installation) return;
-
-    const hubClient = new HubClient(installation.hubUrl, installation.appToken);
-
-    console.log(`[Event] 收到事件: type=${type}, installation=${installationId}`);
-
-    if (type === "command") {
-      // 命令路由
-      const result = await router.handleCommand(event, installation, hubClient);
-      if (result) {
-        // 通过 Hub API 回复结果给用户
-        const userId = event.event.data?.user_id;
-        if (userId) {
-          await hubClient.sendText(userId, result, event.trace_id);
-        }
-      }
-    } else if (type.startsWith("message")) {
-      // 微信消息桥接到 Slack
-      await wxToSlack.handleWxEvent(event, installation);
-    }
-  }
 
   // 创建 HTTP 服务器
   const server: Server = createServer(async (req, res) => {
@@ -122,13 +89,43 @@ async function main(): Promise<void> {
       }
 
       if (path === "/oauth/redirect" && req.method === "GET") {
-        await handleOAuthRedirect(req, res, config, store);
+        await handleOAuthRedirect(req, res, config, store, definitions);
         return;
       }
 
-      // Hub Webhook
+      // Hub Webhook - command 事件支持同步/异步响应
       if (path === "/hub/webhook" && req.method === "POST") {
-        await handleWebhook(req, res, store, onHubEvent);
+        await handleWebhook(req, res, store, {
+          // 命令事件 - 路由到 tool handler
+          onCommand: async (event, installation) => {
+            if (!event.event) return null;
+            const hubClient = new HubClient(installation.hubUrl, installation.appToken);
+            return router.handleCommand(event, installation, hubClient);
+          },
+          // 非命令事件（消息桥接等）
+          onEvent: async (event, installation) => {
+            if (!event.event) return;
+            if (event.event.type.startsWith("message")) {
+              await wxToSlack.handleWxEvent(event, installation);
+            }
+          },
+          // 异步推送回调 - 命令超时后通过 Bot API 推送结果
+          onAsyncPush: async (result, event, installation) => {
+            const hubClient = new HubClient(installation.hubUrl, installation.appToken);
+            const userId = event.event?.data?.user_id;
+            if (!userId) return;
+            try {
+              if (result.type === "image" && (result.url || result.base64)) {
+                await hubClient.sendImage(userId, result.url || result.base64!, event.trace_id);
+              }
+              if (result.reply) {
+                await hubClient.sendText(userId, result.reply, event.trace_id);
+              }
+            } catch (err) {
+              console.error("[Server] 异步推送命令结果失败:", err);
+            }
+          },
+        });
         return;
       }
 

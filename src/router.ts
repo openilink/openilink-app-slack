@@ -1,4 +1,4 @@
-import type { HubEvent, Installation, ToolHandler, ToolContext } from "./hub/types.js";
+import type { HubEvent, Installation, ToolHandler, ToolContext, ToolResult } from "./hub/types.js";
 import { HubClient } from "./hub/client.js";
 
 /**
@@ -20,13 +20,13 @@ export class Router {
    * @param event Hub 推送的事件
    * @param installation 安装记录
    * @param hubClient Hub 客户端（可用于在 handler 中回复消息）
-   * @returns handler 执行结果，未找到 handler 时返回 null
+   * @returns handler 执行结果（字符串或 ToolResult），未找到 handler 时返回 null
    */
   async handleCommand(
     event: HubEvent,
     installation: Installation,
     hubClient: HubClient,
-  ): Promise<string | null> {
+  ): Promise<string | ToolResult | null> {
     if (!event.event) return null;
 
     const { data } = event.event;
