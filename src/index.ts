@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { loadConfig } from "./config.js";
 import { Store } from "./store.js";
 import { handleOAuthSetup, handleOAuthRedirect, handleOAuthNotify, cleanExpired } from "./hub/oauth.js";
+import { handleSettingsPage, handleSettingsVerify, handleSettingsSave } from "./hub/settings.js";
 import { handleWebhook } from "./hub/webhook.js";
 import { getManifest } from "./hub/manifest.js";
 import { HubClient } from "./hub/client.js";
@@ -22,15 +23,22 @@ function getOrCreateSlackClient(
   installationId: string,
   botToken: string,
   channelId: string,
-  defaultClient: SlackClient,
+  defaultClient: SlackClient | null,
 ): SlackClient {
-  if (!installationId) return defaultClient;
+  // 如果没有 installationId 且有默认客户端，直接复用
+  if (!installationId && defaultClient) return defaultClient;
   const cached = slackClientCache.get(installationId);
   if (cached) return cached;
-  const client = new SlackClient(botToken, channelId);
-  slackClientCache.set(installationId, client);
-  console.log(`[Server] 为安装 ${installationId} 创建了独立的 Slack 客户端`);
-  return client;
+  // 如果有凭证则创建新客户端并缓存
+  if (botToken) {
+    const client = new SlackClient(botToken, channelId);
+    slackClientCache.set(installationId, client);
+    console.log(`[Server] 为安装 ${installationId} 创建了独立的 Slack 客户端`);
+    return client;
+  }
+  // 兜底：使用默认客户端
+  if (defaultClient) return defaultClient;
+  throw new Error(`[Server] 安装 ${installationId} 缺少 Slack 凭证且无默认客户端`);
 }
 
 /** 启动服务 */
@@ -42,29 +50,44 @@ async function main(): Promise<void> {
 
   const store = new Store(config.dbPath);
 
-  // 初始化 Slack 客户端
-  const slackClient = new SlackClient(config.slackBotToken, config.slackChannelId);
+  // 初始化 Slack 客户端（如果环境变量中配置了 Slack 凭证）
+  const hasSlackCredentials = !!(config.slackBotToken && config.slackAppToken);
+  const slackClient = hasSlackCredentials
+    ? new SlackClient(config.slackBotToken, config.slackChannelId)
+    : null;
+  if (slackClient) {
+    console.log("[Server] Slack 客户端初始化完成");
+  } else {
+    console.log("[Server] 未配置 Slack 凭证，跳过默认 Slack 客户端初始化（云端托管模式，用户安装时填写）");
+  }
 
-  // 收集所有 Tool 定义和 Handler
-  const { definitions, handlers } = collectAllTools(slackClient.web);
+  // 收集所有 Tool 定义和 Handler（需要一个 WebClient 实例来获取定义，如果没有默认客户端则用空凭证的客户端仅收集定义）
+  const toolsSdkClient = slackClient ?? new SlackClient("", "");
+  const { definitions, handlers } = collectAllTools(toolsSdkClient.web);
 
   // 初始化命令路由器
   const router = new Router(handlers);
 
-  // 初始化消息桥接
-  const wxToSlack = new WxToSlack(slackClient, store, config.slackChannelId);
-  const slackToWx = new SlackToWx(store, config.slackChannelId);
+  // 初始化消息桥接（如果有默认 Slack 客户端才启用）
+  const wxToSlack = slackClient ? new WxToSlack(slackClient, store, config.slackChannelId) : null;
+  const slackToWx = slackClient ? new SlackToWx(store, config.slackChannelId) : null;
 
-  // 创建 Slack Bolt App（Socket Mode）
-  const slackApp = createSlackApp(
-    config.slackBotToken,
-    config.slackAppToken,
-    async (data: SlackMessageData) => {
-      // Slack 消息回调：将 Slack 回复转发回微信
-      const installations = store.getAllInstallations();
-      await slackToWx.handleSlackMessage(data, installations);
-    },
-  );
+  // 创建 Slack Bolt App（Socket Mode，仅在配置了 Slack 凭证时启动）
+  let slackApp: Awaited<ReturnType<typeof createSlackApp>> | null = null;
+  if (hasSlackCredentials && slackToWx) {
+    const _slackToWx = slackToWx;
+    slackApp = createSlackApp(
+      config.slackBotToken,
+      config.slackAppToken,
+      async (data: SlackMessageData) => {
+        // Slack 消息回调：将 Slack 回复转发回微信
+        const installations = store.getAllInstallations();
+        await _slackToWx.handleSlackMessage(data, installations);
+      },
+    );
+  } else {
+    console.log("[Server] 未配置 Slack 凭证，跳过 Socket Mode 连接");
+  }
 
   // 定期清理过期的 PKCE 缓存
   const cleanupTimer = setInterval(cleanExpired, 60_000);
@@ -101,9 +124,9 @@ async function main(): Promise<void> {
         return;
       }
 
-      // OAuth 安装流程
-      if (path === "/oauth/setup" && req.method === "GET") {
-        handleOAuthSetup(req, res, config);
+      // GET/POST /oauth/setup - OAuth 安装流程（显示配置表单 / 提交后跳转授权）
+      if (path === "/oauth/setup" && (req.method === "GET" || req.method === "POST")) {
+        await handleOAuthSetup(req, res, config);
         return;
       }
 
@@ -118,6 +141,24 @@ async function main(): Promise<void> {
           await handleOAuthRedirect(req, res, config, store, definitions);
           return;
         }
+      }
+
+      // GET /settings — 设置页面（输入 token 验证身份）
+      if (req.method === "GET" && path === "/settings") {
+        handleSettingsPage(req, res);
+        return;
+      }
+
+      // POST /settings/verify — 验证 token 后显示配置表单
+      if (req.method === "POST" && path === "/settings/verify") {
+        await handleSettingsVerify(req, res, config, store);
+        return;
+      }
+
+      // POST /settings/save — 保存修改后的配置
+      if (req.method === "POST" && path === "/settings/save") {
+        await handleSettingsSave(req, res, config, store);
+        return;
       }
 
       // Hub Webhook - command 事件支持同步/异步响应
@@ -146,7 +187,7 @@ async function main(): Promise<void> {
           // 非命令事件（消息桥接等）
           onEvent: async (event, installation) => {
             if (!event.event) return;
-            if (event.event.type.startsWith("message")) {
+            if (event.event.type.startsWith("message") && wxToSlack) {
               await wxToSlack.handleWxEvent(event, installation);
             }
           },
@@ -188,9 +229,11 @@ async function main(): Promise<void> {
     }
   });
 
-  // 启动 Slack Socket Mode
-  await slackApp.start();
-  console.log("[Slack] Socket Mode 已连接");
+  // 启动 Slack Socket Mode（仅在配置了 Slack 凭证时启动）
+  if (slackApp) {
+    await slackApp.start();
+    console.log("[Slack] Socket Mode 已连接");
+  }
 
   // 启动 HTTP 服务
   server.listen(Number(config.port), () => {
@@ -207,12 +250,15 @@ async function main(): Promise<void> {
     clearInterval(cleanupTimer);
 
     // 并行关闭所有服务
-    Promise.all([
-      slackApp.stop().catch((err: unknown) => console.error("[Slack] 关闭失败:", err)),
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      }),
-    ])
+    const tasks: Promise<void>[] = [];
+    if (slackApp) {
+      tasks.push(slackApp.stop().then(() => {}).catch((err: unknown) => console.error("[Slack] 关闭失败:", err)));
+    }
+    tasks.push(new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    }));
+
+    Promise.all(tasks)
       .then(() => {
         store.close();
         console.log("[Server] 已优雅关闭");
