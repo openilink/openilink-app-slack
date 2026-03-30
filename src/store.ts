@@ -117,11 +117,11 @@ export class Store {
     return Number(result.lastInsertRowid);
   }
 
-  /** 根据 Slack 消息时间戳和频道查找关联 */
-  getMessageLinkBySlack(channelId: string, messageTs: string): MessageLink | undefined {
+  /** 根据 Slack 消息时间戳、频道和安装实例 ID 查找关联 */
+  getMessageLinkBySlack(channelId: string, messageTs: string, installationId: string): MessageLink | undefined {
     const row = this.db
-      .prepare("SELECT * FROM message_links WHERE slack_channel_id = ? AND slack_message_ts = ?")
-      .get(channelId, messageTs) as Record<string, any> | undefined;
+      .prepare("SELECT * FROM message_links WHERE slack_channel_id = ? AND slack_message_ts = ? AND installation_id = ?")
+      .get(channelId, messageTs, installationId) as Record<string, any> | undefined;
     if (!row) return undefined;
     return this.rowToMessageLink(row);
   }

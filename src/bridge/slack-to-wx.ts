@@ -38,15 +38,19 @@ export class SlackToWx {
       return;
     }
 
-    // 根据线程的父消息 ts 查找消息关联
-    const link = this.store.getMessageLinkBySlack(data.channel, threadTs);
+    // 根据线程的父消息 ts 查找消息关联，遍历所有安装实例
+    let link: import("../hub/types.js").MessageLink | undefined;
+    for (const inst of installations) {
+      link = this.store.getMessageLinkBySlack(data.channel, threadTs, inst.id);
+      if (link) break;
+    }
     if (!link) {
       console.log(`[SlackToWx] 未找到消息关联: channel=${data.channel}, threadTs=${threadTs}`);
       return;
     }
 
     // 查找对应的安装记录
-    const installation = installations.find((inst) => inst.id === link.installationId);
+    const installation = installations.find((inst) => inst.id === link!.installationId);
     if (!installation) {
       console.warn(`[SlackToWx] 未找到安装记录: installationId=${link.installationId}`);
       return;
