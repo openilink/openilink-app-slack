@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { loadConfig } from "./config.js";
 import { Store } from "./store.js";
-import { handleOAuthSetup, handleOAuthRedirect, cleanExpired } from "./hub/oauth.js";
+import { handleOAuthSetup, handleOAuthRedirect, handleOAuthNotify, cleanExpired } from "./hub/oauth.js";
 import { handleWebhook } from "./hub/webhook.js";
 import { getManifest } from "./hub/manifest.js";
 import { HubClient } from "./hub/client.js";
@@ -88,9 +88,17 @@ async function main(): Promise<void> {
         return;
       }
 
-      if (path === "/oauth/redirect" && req.method === "GET") {
-        await handleOAuthRedirect(req, res, config, store, definitions);
-        return;
+      // GET /oauth/redirect - OAuth 回调（模式 1）
+      // POST /oauth/redirect - Hub 直接安装通知（模式 2）
+      if (path === "/oauth/redirect") {
+        if (req.method === "POST") {
+          await handleOAuthNotify(req, res, config, store, definitions);
+          return;
+        }
+        if (req.method === "GET") {
+          await handleOAuthRedirect(req, res, config, store, definitions);
+          return;
+        }
       }
 
       // Hub Webhook - command 事件支持同步/异步响应
