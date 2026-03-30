@@ -14,6 +14,25 @@ import { collectAllTools } from "./tools/index.js";
 import { WxToSlack } from "./bridge/wx-to-slack.js";
 import { SlackToWx } from "./bridge/slack-to-wx.js";
 
+/** 按 installation_id 缓存的 per-installation Slack 客户端 */
+const slackClientCache = new Map<string, SlackClient>();
+
+/** 获取或创建 per-installation 的 Slack 客户端 */
+function getOrCreateSlackClient(
+  installationId: string,
+  botToken: string,
+  channelId: string,
+  defaultClient: SlackClient,
+): SlackClient {
+  if (!installationId) return defaultClient;
+  const cached = slackClientCache.get(installationId);
+  if (cached) return cached;
+  const client = new SlackClient(botToken, channelId);
+  slackClientCache.set(installationId, client);
+  console.log(`[Server] 为安装 ${installationId} 创建了独立的 Slack 客户端`);
+  return client;
+}
+
 /** 启动服务 */
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -107,8 +126,22 @@ async function main(): Promise<void> {
           // 命令事件 - 路由到 tool handler
           onCommand: async (event, installation) => {
             if (!event.event) return null;
+            // 读取本地加密存储的用户配置，优先于环境变量
+            const userCfg = store.getConfig(installation.id);
+            const botToken = userCfg.slack_bot_token || config.slackBotToken;
+            const channelId = userCfg.slack_channel_id || config.slackChannelId;
+
+            // 如果用户有自定义凭证，使用 per-installation 缓存客户端
+            const instSlackClient = getOrCreateSlackClient(
+              installation.id, botToken, channelId, slackClient,
+            );
+
+            // 用当前安装对应的 Slack WebClient 重新收集 tools handlers
+            const { handlers: instHandlers } = collectAllTools(instSlackClient.web);
+            const instRouter = new Router(instHandlers);
+
             const hubClient = new HubClient(installation.hubUrl, installation.appToken);
-            return router.handleCommand(event, installation, hubClient);
+            return instRouter.handleCommand(event, installation, hubClient);
           },
           // 非命令事件（消息桥接等）
           onEvent: async (event, installation) => {

@@ -30,7 +30,7 @@ export function getManifest(config: Config, toolDefinitions?: ToolDefinition[]):
     description: "微信 ↔ Slack 双向桥接 + Slack 全平台操作",
     icon: "💬",
     events: ["message", "command"],
-    scopes: ["message:read", "message:write", "tools:write"],
+    scopes: ["message:read", "message:write", "tools:write", "config:read"],
     tools: toolDefinitions,
     oauth_setup_url: `${config.baseUrl}/oauth/setup`,
     oauth_redirect_url: `${config.baseUrl}/oauth/redirect`,
